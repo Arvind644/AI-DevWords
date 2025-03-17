@@ -26,6 +26,14 @@ content_type = st.sidebar.selectbox(
     ["Blog Post", "Tutorial", "Technical Guide", "Trend Report"]
 )
 
+# Article length configuration
+article_length = st.sidebar.select_slider(
+    "Article Length",
+    options=["short", "medium", "long", "very_long"],
+    value="medium",
+    help="short (~800 words), medium (~1500 words), long (~2500 words), very_long (~4000 words)"
+)
+
 # Main content
 st.title("📝 Technical Blog Generator")
 st.markdown("Generate high-quality technical content powered by Exa AI")
@@ -62,22 +70,33 @@ with st.expander("Advanced Options"):
             ["markdown", "html", "json"]
         )
 
+# Word count info
+st.sidebar.markdown("---")
+st.sidebar.markdown("### Estimated Word Count")
+word_counts = {
+    "short": "~800 words",
+    "medium": "~1500 words",
+    "long": "~2500 words",
+    "very_long": "~4000 words"
+}
+st.sidebar.info(f"Target length: {word_counts[article_length]}")
+
 # Generation
 if st.button("Generate Content", type="primary"):
     if not topic:
         st.error("Please enter a topic")
     else:
-        with st.spinner("Generating content..."):
+        with st.spinner(f"Generating {article_length} article about {topic}..."):
             try:
                 # Generate content based on type
                 if content_type == "Blog Post":
-                    content = blog_generator.generate_blog_post(topic, style)
+                    content = blog_generator.generate_blog_post(topic, style, article_length)
                 elif content_type == "Tutorial":
                     content = blog_generator.generate_tutorial(topic, difficulty)
                 elif content_type == "Trend Report":
                     content = tech_tracker.generate_trend_report(topic)
                 else:
-                    content = blog_generator.generate_blog_post(topic, style)
+                    content = blog_generator.generate_blog_post(topic, style, article_length)
 
                 # Add metadata
                 content = content_processor.add_metadata(content)
@@ -87,6 +106,10 @@ if st.button("Generate Content", type="primary"):
 
                 # Display results
                 st.success("Content generated successfully!")
+                
+                # Display word count
+                word_count = len(formatted_content.split())
+                st.info(f"Generated article length: {word_count} words")
                 
                 # Preview section
                 st.subheader("Preview")

@@ -51,14 +51,108 @@ class BlogGenerator:
         )
         return search_response.results
 
-    def _generate_content(self, topic: str, search_results: List[Dict], style: str) -> Dict:
-        """Generate content using OpenAI based on search results."""
-        # Prepare context from search results
-        context = "\n\n".join([
-            f"Title: {result.title}\nContent: {result.text[:500]}..."  # Limit content length
-            for result in search_results[:3]  # Use top 3 results
-        ])
+    def _get_length_instruction(self, length: str) -> tuple:
+        """Get word count and instruction based on desired length."""
+        length_configs = {
+            "short": (800, "Create a concise and focused article around 800 words"),
+            "medium": (1500, "Create a comprehensive article around 1500 words"),
+            "long": (2500, "Create a detailed, in-depth article around 2500 words"),
+            "very_long": (4000, "Create an extensive, thoroughly detailed article around 4000 words")
+        }
+        return length_configs.get(length, length_configs["medium"])
 
+    def _get_model_config(self, length: str) -> Dict:
+        """Get model configuration based on content length."""
+        configs = {
+            "short": {
+                "model": "gpt-3.5-turbo",
+                "max_tokens": 1200,  # ~800 words
+                "temperature": 0.7,
+                "presence_penalty": 0.0
+            },
+            "medium": {
+                "model": "gpt-3.5-turbo",
+                "max_tokens": 2200,  # ~1500 words
+                "temperature": 0.7,
+                "presence_penalty": 0.1
+            },
+            "long": {
+                "model": "gpt-4",  # Using GPT-4 for better long-form content
+                "max_tokens": 3700,  # ~2500 words
+                "temperature": 0.75,
+                "presence_penalty": 0.2
+            },
+            "very_long": {
+                "model": "gpt-4",  # Using GPT-4 for better long-form content
+                "max_tokens": 6000,  # ~4000 words
+                "temperature": 0.8,
+                "presence_penalty": 0.3
+            }
+        }
+        return configs.get(length, configs["medium"])
+
+    def _generate_content_in_chunks(self, topic: str, context: str, style: str, length: str) -> str:
+        """Generate content in chunks for very long articles."""
+        word_count, length_instruction = self._get_length_instruction(length)
+        model_config = self._get_model_config(length)
+        
+        if length != "very_long":
+            # For shorter content, generate in one go
+            return self._generate_single_chunk(topic, context, style, length_instruction, model_config)
+        
+        # For very long content, generate in sections
+        sections = [
+            "Introduction and Background",
+            "Main Concepts and Technical Details",
+            "Analysis and Implementation",
+            "Advanced Topics and Future Implications",
+            "Conclusion and Key Takeaways"
+        ]
+        
+        content_parts = []
+        section_word_count = word_count // len(sections)
+        
+        for i, section in enumerate(sections):
+            section_prompt = f"""Based on the following information about {topic}, create the {section} section.
+            
+{context}
+
+This is section {i+1} of {len(sections)}. Target length: ~{section_word_count} words.
+Style: {style}
+
+Make sure this section flows naturally with the other sections and maintains a cohesive narrative.
+"""
+            
+            completion = openai.chat.completions.create(
+                model=model_config["model"],
+                messages=[
+                    {"role": "system", "content": "You are an expert technical writer creating a section of a comprehensive article."},
+                    {"role": "user", "content": section_prompt}
+                ],
+                max_tokens=model_config["max_tokens"] // len(sections),
+                temperature=model_config["temperature"],
+                presence_penalty=model_config["presence_penalty"]
+            )
+            
+            content_parts.append(completion.choices[0].message.content)
+        
+        # Generate title separately
+        title_prompt = f"Generate a compelling title for a comprehensive article about {topic} in {style} style."
+        title_completion = openai.chat.completions.create(
+            model=model_config["model"],
+            messages=[
+                {"role": "system", "content": "Generate only the title, nothing else."},
+                {"role": "user", "content": title_prompt}
+            ],
+            max_tokens=50,
+            temperature=0.7
+        )
+        
+        title = title_completion.choices[0].message.content.strip()
+        return f"# {title}\n\n" + "\n\n".join(content_parts)
+
+    def _generate_single_chunk(self, topic: str, context: str, style: str, length_instruction: str, model_config: Dict) -> str:
+        """Generate content in a single chunk for shorter articles."""
         style_instructions = {
             "Technical": "Create a technical blog post with detailed explanations and focus on implementation details.",
             "Tutorial": "Create a step-by-step tutorial that guides readers through learning and implementation.",
@@ -68,25 +162,44 @@ class BlogGenerator:
 
         prompt = f"""Based on the following recent information about {topic}, {style_instructions.get(style, '')}
 
+{length_instruction}
+
 Context:
 {context}
 
 Generate a comprehensive blog post that includes:
 1. An engaging title
-2. A well-structured main content
+2. A well-structured main content with appropriate headings and subheadings
 3. Key takeaways or conclusions
 4. If relevant, code examples or technical specifications
+
+Use appropriate section breaks and formatting for better readability.
 """
 
         completion = openai.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model=model_config["model"],
             messages=[
                 {"role": "system", "content": "You are an expert technical writer who creates high-quality blog content."},
                 {"role": "user", "content": prompt}
-            ]
+            ],
+            max_tokens=model_config["max_tokens"],
+            temperature=model_config["temperature"],
+            presence_penalty=model_config["presence_penalty"]
         )
 
-        content = completion.choices[0].message.content
+        return completion.choices[0].message.content
+
+    def _generate_content(self, topic: str, search_results: List[Dict], style: str, length: str = "medium") -> Dict:
+        """Generate content using OpenAI based on search results."""
+        # Prepare context from search results
+        num_results = 7 if length in ["long", "very_long"] else 3
+        context = "\n\n".join([
+            f"Title: {result.title}\nContent: {result.text[:2000] if length in ['long', 'very_long'] else result.text[:500]}..."
+            for result in search_results[:num_results]
+        ])
+
+        # Generate content
+        content = self._generate_content_in_chunks(topic, context, style, length)
 
         # Extract title and content
         lines = content.split("\n")
@@ -98,11 +211,20 @@ Generate a comprehensive blog post that includes:
             "content": main_content,
             "date": datetime.now().strftime("%Y-%m-%d"),
             "tags": [topic, style],
+            "length": length,
+            "target_word_count": self._get_length_instruction(length)[0],
             "code_examples": []  # TODO: Extract code examples if present
         }
 
-    def generate_blog_post(self, topic: str, style: str = "technical") -> Dict:
-        """Generate a complete blog post about a given topic."""
+    def generate_blog_post(self, topic: str, style: str = "technical", length: str = "medium") -> Dict:
+        """
+        Generate a complete blog post about a given topic.
+        
+        Args:
+            topic (str): The main topic of the blog post
+            style (str): The writing style ("Technical", "Tutorial", "Overview", "Deep Dive")
+            length (str): Desired length of the article ("short", "medium", "long", "very_long")
+        """
         # Generate optimized search query
         search_query = self._generate_search_query(topic, style)
         
@@ -110,7 +232,7 @@ Generate a comprehensive blog post that includes:
         search_results = self._search_recent_content(search_query)
         
         # Generate the blog post
-        return self._generate_content(topic, search_results, style)
+        return self._generate_content(topic, search_results, style, length)
 
     def generate_tutorial(self, topic: str, difficulty: str = "intermediate") -> Dict:
         """Generate a step-by-step tutorial with code examples."""
